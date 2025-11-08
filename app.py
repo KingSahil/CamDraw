@@ -2,18 +2,6 @@ import cv2
 import numpy as np
 import os
 import sys
-
-# Suppress all TensorFlow and MediaPipe warnings
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
-os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
-import logging
-logging.getLogger('tensorflow').setLevel(logging.ERROR)
-logging.getLogger('mediapipe').setLevel(logging.ERROR)
-
-# Suppress stderr warnings
-import warnings
-warnings.filterwarnings('ignore')
-
 import mediapipe as mp
 
 mp_hands = mp.solutions.hands
@@ -64,6 +52,7 @@ color_changed_this_gesture = False  # Prevent multiple color changes
 
 # UI toggle
 show_overlays = True  # Toggle for showing/hiding all UI elements
+vertical_mode = False  # Toggle for vertical/horizontal orientation
 
 # Finger indices (tip and base/pip joint pairs)
 finger_tips = [4, 8, 12, 16, 20]  # Thumb, Index, Middle, Ring, Pinky
@@ -186,11 +175,17 @@ while True:
             index_tip = hand_landmarks.landmark[8]
             index_x, index_y = int(index_tip.x * w), int(index_tip.y * h)
             
-            # Palm center coordinates (for erasing with whole hand)
-            palm_base = hand_landmarks.landmark[0]  # Wrist
+            # Palm center coordinates (better calculation for both hands)
+            # Use average of all palm base landmarks for more accurate center
+            wrist = hand_landmarks.landmark[0]
+            index_mcp = hand_landmarks.landmark[5]  # Index finger base
             middle_mcp = hand_landmarks.landmark[9]  # Middle finger base
-            palm_x = int((palm_base.x + middle_mcp.x) / 2 * w)
-            palm_y = int((palm_base.y + middle_mcp.y) / 2 * h)
+            ring_mcp = hand_landmarks.landmark[13]  # Ring finger base
+            pinky_mcp = hand_landmarks.landmark[17]  # Pinky base
+            
+            # Calculate center of palm from all base points
+            palm_x = int((wrist.x + index_mcp.x + middle_mcp.x + ring_mcp.x + pinky_mcp.x) / 5 * w)
+            palm_y = int((wrist.y + index_mcp.y + middle_mcp.y + ring_mcp.y + pinky_mcp.y) / 5 * h)
             
             # Store last known position and gesture state
             last_known_position = (index_x, index_y, palm_x, palm_y, fingers.copy())
@@ -345,22 +340,54 @@ while True:
 
     overlay = cv2.addWeighted(frame, 0.6, canvas, 0.8, 0)
     
+    # Apply vertical mode if enabled (change aspect ratio to 9:16 for Instagram/portrait)
+    if vertical_mode:
+        h, w = overlay.shape[:2]
+        # Calculate 9:16 aspect ratio dimensions (portrait)
+        target_width = int(h * 9 / 16)
+        # Center crop to vertical aspect ratio
+        start_x = (w - target_width) // 2
+        overlay = overlay[:, start_x:start_x + target_width]
+    
     # Draw UI elements only if overlays are enabled
     if show_overlays:
+        # Adjust sizes based on mode
+        if vertical_mode:
+            palette_size = 25
+            palette_spacing = 30
+            text_scale_1 = 0.4
+            text_scale_2 = 0.35
+            text_thickness = 1
+            palette_x, palette_y = 10, 80
+            text_y1, text_y2 = 30, 55
+        else:
+            palette_size = 40
+            palette_spacing = 50
+            text_scale_1 = 0.8
+            text_scale_2 = 0.7
+            text_thickness = 2
+            palette_x, palette_y = 20, 100
+            text_y1, text_y2 = 50, 80
+        
         # Draw color palette indicator
-        palette_x, palette_y = 20, 100
         for i, color in enumerate(color_palette):
-            cv2.rectangle(overlay, (palette_x + i*50, palette_y), 
-                         (palette_x + i*50 + 40, palette_y + 40), color, -1)
+            cv2.rectangle(overlay, (palette_x + i*palette_spacing, palette_y), 
+                         (palette_x + i*palette_spacing + palette_size, palette_y + palette_size), color, -1)
             if i == current_color_idx:
-                cv2.rectangle(overlay, (palette_x + i*50, palette_y), 
-                             (palette_x + i*50 + 40, palette_y + 40), (255, 255, 255), 3)
+                cv2.rectangle(overlay, (palette_x + i*palette_spacing, palette_y), 
+                             (palette_x + i*palette_spacing + palette_size, palette_y + palette_size), (255, 255, 255), 2)
         
         # Instructions
-        cv2.putText(overlay, "1 Finger: Draw | All Fingers: Erase | 3 Fingers: Change Color",
-                    (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
-        cv2.putText(overlay, "Press 'C' to Clear | 'Q' to Quit | 'Z' to Toggle UI",
-                    (20, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 2)
+        if vertical_mode:
+            cv2.putText(overlay, "Draw | Erase | Color",
+                        (10, text_y1), cv2.FONT_HERSHEY_SIMPLEX, text_scale_1, (255, 255, 255), text_thickness)
+            cv2.putText(overlay, "C:Clear Z:UI V:View",
+                        (10, text_y2), cv2.FONT_HERSHEY_SIMPLEX, text_scale_2, (200, 200, 200), text_thickness)
+        else:
+            cv2.putText(overlay, "1 Finger: Draw | All Fingers: Erase | 3 Fingers: Change Color",
+                        (20, text_y1), cv2.FONT_HERSHEY_SIMPLEX, text_scale_1, (255, 255, 255), text_thickness)
+            cv2.putText(overlay, "Press 'C' Clear | 'Q' Quit | 'Z' Toggle UI | 'V' Vertical",
+                        (20, text_y2), cv2.FONT_HERSHEY_SIMPLEX, text_scale_2, (200, 200, 200), text_thickness)
 
     cv2.imshow("Gesture Drawing App", overlay)
 
@@ -369,6 +396,8 @@ while True:
         canvas = np.zeros((720, 1280, 3), dtype=np.uint8)
     elif key == ord('z'):
         show_overlays = not show_overlays
+    elif key == ord('v'):
+        vertical_mode = not vertical_mode
     elif key == ord('q'):
         break
 
